@@ -48,6 +48,121 @@ def haversine(lat1, lon1, lat2, lon2):
     a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
     return 2 * R * math.asin(math.sqrt(a))
 
+
+def initialize_database():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teachers (
+        teacher_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER UNIQUE,
+        name TEXT NOT NULL,
+        password TEXT NOT NULL
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        student_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER UNIQUE,
+        roll_number TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        father_name TEXT,
+        enrollment_number TEXT,
+        dob TEXT NOT NULL,
+        theme TEXT DEFAULT \'light\'
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS courses (
+        course_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_name TEXT NOT NULL,
+        section TEXT,
+        teacher_id INTEGER,
+        join_code TEXT,
+        FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id)
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS enrollments (
+        enrollment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER,
+        course_id INTEGER,
+        FOREIGN KEY (student_id) REFERENCES students(student_id),
+        FOREIGN KEY (course_id) REFERENCES courses(course_id)
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS attendance_sessions (
+        session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_id INTEGER,
+        session_date TEXT,
+        start_time TEXT,
+        end_time TEXT,
+        status TEXT DEFAULT \'open\',
+        teacher_lat REAL,
+        teacher_lon REAL,
+        teacher_accuracy REAL,
+        FOREIGN KEY (course_id) REFERENCES courses(course_id)
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS attendance_records (
+        record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER,
+        student_id INTEGER,
+        status TEXT,
+        marked_time TEXT,
+        FOREIGN KEY (session_id) REFERENCES attendance_sessions(session_id),
+        FOREIGN KEY (student_id) REFERENCES students(student_id)
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS course_teachers (
+        course_id INTEGER,
+        teacher_id INTEGER,
+        PRIMARY KEY (course_id, teacher_id)
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """)
+
+    # Backfill course_teachers for any pre-existing courses that predate this table
+    cursor.execute("SELECT course_id, teacher_id FROM courses")
+    for cid, tid in cursor.fetchall():
+        cursor.execute(
+            "INSERT OR IGNORE INTO course_teachers (course_id, teacher_id) VALUES (?, ?)",
+            (cid, tid)
+        )
+
+    # Backfill join_code for any courses missing one
+    import random as _random
+    import string as _string
+    cursor.execute("SELECT course_id FROM courses WHERE join_code IS NULL OR join_code = \'\'")
+    for (cid,) in cursor.fetchall():
+        while True:
+            code = "".join(_random.choice(_string.ascii_uppercase + _string.digits) for _ in range(6))
+            cursor.execute("SELECT 1 FROM courses WHERE join_code = ?", (code,))
+            if not cursor.fetchone():
+                break
+        cursor.execute("UPDATE courses SET join_code = ? WHERE course_id = ?", (code, cid))
+
+    conn.commit()
+    conn.close()
+    print("Database initialized/verified successfully.")
+
+
 # States
 CHOOSING_ROLE, STUDENT_ROLL, STUDENT_DOB, TEACHER_NAME, TEACHER_PASSWORD = range(5)
 TEACHER_MENU, COURSE_NAME, COURSE_SECTION = range(5, 8)
@@ -1802,6 +1917,7 @@ async def post_init(application):
         BotCommand("logout", "Log out of your account"),
     ])
 
+initialize_database()
 persistence = PicklePersistence(filepath="bot_persistence.pickle")
 app = ApplicationBuilder().token(BOT_TOKEN).persistence(persistence).post_init(post_init).build()
 
