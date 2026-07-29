@@ -1914,6 +1914,7 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application):
     await application.bot.set_my_commands([
         BotCommand("start", "Start or open your main menu"),
+        BotCommand("login", "Log in to your account"),
         BotCommand("cancel", "Cancel current action / stop process"),
         BotCommand("logout", "Log out of your account"),
     ])
@@ -1923,7 +1924,7 @@ persistence = PicklePersistence(filepath="bot_persistence.pickle")
 app = ApplicationBuilder().token(BOT_TOKEN).persistence(persistence).post_init(post_init).build()
 
 conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
+    entry_points=[CommandHandler("start", start), CommandHandler("login", start)],
     name="main_conv",
     persistent=True,
     states={
