@@ -1914,6 +1914,7 @@ async def logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application):
     await application.bot.set_my_commands([
         BotCommand("start", "Start or open your main menu"),
+        BotCommand("cancel", "Cancel current action / stop process"),
         BotCommand("logout", "Log out of your account"),
     ])
 
