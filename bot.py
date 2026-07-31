@@ -392,6 +392,42 @@ async def teacher_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = get_connection()
     cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT teacher_id, telegram_id, password FROM teachers WHERE LOWER(name) = LOWER(?)",
+        (name,)
+    )
+    existing = cursor.fetchone()
+
+    if existing:
+        existing_teacher_id, existing_telegram_id, existing_password = existing
+
+        if existing_telegram_id is not None:
+            conn.close()
+            await update.message.reply_text(
+                "An account with this name is already linked to another Telegram account.\n"
+                "Please contact the admin if this is a mistake, or /cancel.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        if existing_password != password:
+            conn.close()
+            await update.message.reply_text(
+                "Incorrect password for this existing account. Please try again, or /cancel."
+            )
+            return TEACHER_PASSWORD
+
+        cursor.execute(
+            "UPDATE teachers SET telegram_id = ? WHERE teacher_id = ?",
+            (telegram_id, existing_teacher_id)
+        )
+        conn.commit()
+        conn.close()
+
+        await show_teacher_menu(update, f"Login successful! Welcome back, {name}.\nUse /logout to log out.")
+        return TEACHER_MENU
+
     cursor.execute(
         "INSERT INTO teachers (telegram_id, name, password) VALUES (?, ?, ?)",
         (telegram_id, name, password)
