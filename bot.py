@@ -39,6 +39,17 @@ def generate_unique_join_code():
             conn.close()
             return code
 
+def generate_unique_teacher_code():
+    conn = get_connection()
+    cursor = conn.cursor()
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = "".join(random.choice(chars) for _ in range(6))
+        cursor.execute("SELECT 1 FROM teachers WHERE teacher_code = ?", (code,))
+        if not cursor.fetchone():
+            conn.close()
+            return code
+
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371000  # earth radius in meters
     phi1 = math.radians(lat1)
@@ -58,9 +69,15 @@ def initialize_database():
         teacher_id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id INTEGER UNIQUE,
         name TEXT NOT NULL,
-        password TEXT NOT NULL
+        password TEXT NOT NULL,
+        teacher_code TEXT
     )
     """)
+
+    try:
+        cursor.execute("ALTER TABLE teachers ADD COLUMN teacher_code TEXT")
+    except Exception:
+        pass
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS students (
@@ -158,6 +175,16 @@ def initialize_database():
                 break
         cursor.execute("UPDATE courses SET join_code = ? WHERE course_id = ?", (code, cid))
 
+    cursor.execute("SELECT teacher_id FROM teachers WHERE teacher_code IS NULL")
+    for row in cursor.fetchall():
+        tid = row[0]
+        while True:
+            tcode = "".join(_random.choice(_string.ascii_uppercase + _string.digits) for _ in range(6))
+            cursor.execute("SELECT 1 FROM teachers WHERE teacher_code = ?", (tcode,))
+            if not cursor.fetchone():
+                break
+        cursor.execute("UPDATE teachers SET teacher_code = ? WHERE teacher_id = ?", (tcode, tid))
+
     conn.commit()
     conn.close()
     print("Database initialized/verified successfully.")
@@ -186,6 +213,11 @@ RESET_SELECT_SCOPE = 27
 RESET_SELECT_DATE = 28
 RESET_MONTH_INPUT = 29
 RESET_CONFIRM = 30
+TEACHER_TYPE_CHOICE = 31
+TEACHER_LOGIN_ID = 32
+TEACHER_LOGIN_PASSWORD = 33
+TEACHER_FORGOT_NAME = 34
+TEACHER_FORGOT_NEWPASS = 35
 
 TEACHER_MENU_KEYBOARD = [["Create Course", "My Courses"], ["Add Students"], ["Take Attendance"], ["View Reports"], ["Fix Attendance", "Reset Attendance"], ["Join Course", "Set Institute Name"]]
 STUDENT_MENU_KEYBOARD = [["My Attendance"], ["Download Attendance Report"], ["Settings"]]
@@ -301,11 +333,12 @@ async def choose_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STUDENT_ROLL
 
     elif role == "teacher":
+        type_keyboard = [["New Teacher (Register)"], ["Existing Teacher (Login)"]]
         await update.message.reply_text(
-            "Please enter your full Name:",
-            reply_markup=ReplyKeyboardRemove()
+            "Are you a new teacher or an existing teacher?",
+            reply_markup=ReplyKeyboardMarkup(type_keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
-        return TEACHER_NAME
+        return TEACHER_TYPE_CHOICE
 
     else:
         keyboard = [["Teacher", "Student"]]
@@ -378,7 +411,7 @@ async def teacher_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     context.user_data["teacher_name"] = update.message.text.strip()
-    await update.message.reply_text("Please set a password for your account:")
+    await update.message.reply_text("Please set a password for your new account:")
     return TEACHER_PASSWORD
 
 async def teacher_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -390,52 +423,24 @@ async def teacher_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = context.user_data.get("teacher_name")
     telegram_id = update.effective_user.id
 
+    teacher_code = generate_unique_teacher_code()
+
     conn = get_connection()
     cursor = conn.cursor()
-
     cursor.execute(
-        "SELECT teacher_id, telegram_id, password FROM teachers WHERE LOWER(name) = LOWER(?)",
-        (name,)
-    )
-    existing = cursor.fetchone()
-
-    if existing:
-        existing_teacher_id, existing_telegram_id, existing_password = existing
-
-        if existing_telegram_id is not None:
-            conn.close()
-            await update.message.reply_text(
-                "An account with this name is already linked to another Telegram account.\n"
-                "Please contact the admin if this is a mistake, or /cancel.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            return ConversationHandler.END
-
-        if existing_password != password:
-            conn.close()
-            await update.message.reply_text(
-                "Incorrect password for this existing account. Please try again, or /cancel."
-            )
-            return TEACHER_PASSWORD
-
-        cursor.execute(
-            "UPDATE teachers SET telegram_id = ? WHERE teacher_id = ?",
-            (telegram_id, existing_teacher_id)
-        )
-        conn.commit()
-        conn.close()
-
-        await show_teacher_menu(update, f"Login successful! Welcome back, {name}.\nUse /logout to log out.")
-        return TEACHER_MENU
-
-    cursor.execute(
-        "INSERT INTO teachers (telegram_id, name, password) VALUES (?, ?, ?)",
-        (telegram_id, name, password)
+        "INSERT INTO teachers (telegram_id, name, password, teacher_code) VALUES (?, ?, ?, ?)",
+        (telegram_id, name, password, teacher_code)
     )
     conn.commit()
     conn.close()
 
-    await show_teacher_menu(update, f"Registration successful! Welcome, {name}.\nUse /logout to log out.")
+    await show_teacher_menu(
+        update,
+        f"Registration successful! Welcome, {name}.\n\n"
+        f"Your Teacher ID: {teacher_code}\n"
+        f"Save this ID - you will need it to log in again after /logout, or to reset your password.\n\n"
+        f"Use /logout to log out."
+    )
     return TEACHER_MENU
 
 async def teacher_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1900,6 +1905,151 @@ async def reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_teacher_menu(update, "Attendance data has been reset successfully.")
     return TEACHER_MENU
 
+async def teacher_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    text = update.message.text.strip().lower()
+
+    if "new" in text:
+        await update.message.reply_text(
+            "Please enter your full Name:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return TEACHER_NAME
+    elif "existing" in text:
+        await update.message.reply_text(
+            "Please enter your Teacher ID:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return TEACHER_LOGIN_ID
+    else:
+        type_keyboard = [["New Teacher (Register)"], ["Existing Teacher (Login)"]]
+        await update.message.reply_text(
+            "Please choose an option from the buttons.",
+            reply_markup=ReplyKeyboardMarkup(type_keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return TEACHER_TYPE_CHOICE
+
+async def teacher_login_id_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    code = update.message.text.strip().upper()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT teacher_id, telegram_id, name, password FROM teachers WHERE teacher_code = ?",
+        (code,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        await update.message.reply_text(
+            "No teacher account found with that Teacher ID. Please check and try again, or /cancel."
+        )
+        return TEACHER_LOGIN_ID
+
+    teacher_id, existing_telegram_id, name, password = row
+
+    if existing_telegram_id is not None:
+        await update.message.reply_text(
+            "This Teacher ID is already linked to another Telegram account.\n"
+            "Please contact the admin if this is a mistake, or /cancel."
+        )
+        return ConversationHandler.END
+
+    context.user_data["login_teacher_id"] = teacher_id
+    context.user_data["login_teacher_name"] = name
+    context.user_data["login_teacher_password"] = password
+    context.user_data["login_teacher_code"] = code
+
+    login_keyboard = ReplyKeyboardMarkup([["Forgot Password"]], resize_keyboard=True, one_time_keyboard=True)
+    await update.message.reply_text(
+        f"Enter your password for {name}:",
+        reply_markup=login_keyboard
+    )
+    return TEACHER_LOGIN_PASSWORD
+
+async def teacher_login_password_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    text = update.message.text.strip()
+
+    if text.lower() == "forgot password":
+        await update.message.reply_text(
+            "Please enter your registered full Name to verify your identity:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return TEACHER_FORGOT_NAME
+
+    stored_password = context.user_data.get("login_teacher_password")
+    teacher_id = context.user_data.get("login_teacher_id")
+    name = context.user_data.get("login_teacher_name")
+    telegram_id = update.effective_user.id
+
+    if text != stored_password:
+        login_keyboard = ReplyKeyboardMarkup([["Forgot Password"]], resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text(
+            "Incorrect password. Please try again, or tap 'Forgot Password'.",
+            reply_markup=login_keyboard
+        )
+        return TEACHER_LOGIN_PASSWORD
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE teachers SET telegram_id = ? WHERE teacher_id = ?", (telegram_id, teacher_id))
+    conn.commit()
+    conn.close()
+
+    await show_teacher_menu(update, f"Login successful! Welcome back, {name}.\nUse /logout to log out.")
+    return TEACHER_MENU
+
+async def teacher_forgot_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    entered_name = update.message.text.strip()
+    stored_name = context.user_data.get("login_teacher_name", "")
+
+    if entered_name.lower() != stored_name.lower():
+        await update.message.reply_text(
+            "That name does not match our records for this Teacher ID. Please try again, or /cancel."
+        )
+        return TEACHER_FORGOT_NAME
+
+    await update.message.reply_text("Identity verified. Please enter your new password:")
+    return TEACHER_FORGOT_NEWPASS
+
+async def teacher_forgot_newpass_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    new_password = update.message.text.strip()
+    teacher_id = context.user_data.get("login_teacher_id")
+    name = context.user_data.get("login_teacher_name")
+    telegram_id = update.effective_user.id
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE teachers SET password = ?, telegram_id = ? WHERE teacher_id = ?",
+        (new_password, telegram_id, teacher_id)
+    )
+    conn.commit()
+    conn.close()
+
+    await show_teacher_menu(update, f"Password reset successful! Welcome back, {name}.\nUse /logout to log out.")
+    return TEACHER_MENU
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.delete()
@@ -1989,6 +2139,11 @@ conv_handler = ConversationHandler(
         FIX_SELECT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, fix_select_date)],
         FIX_SELECT_STUDENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, fix_select_student)],
         FIX_SET_STATUS: [MessageHandler(filters.TEXT & ~filters.COMMAND, fix_set_status)],
+        TEACHER_TYPE_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, teacher_type_choice)],
+        TEACHER_LOGIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, teacher_login_id_received)],
+        TEACHER_LOGIN_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, teacher_login_password_received)],
+        TEACHER_FORGOT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, teacher_forgot_name_received)],
+        TEACHER_FORGOT_NEWPASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, teacher_forgot_newpass_received)],
         RESET_SELECT_COURSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reset_select_course)],
         RESET_SELECT_SCOPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reset_select_scope)],
         RESET_SELECT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reset_select_date)],
